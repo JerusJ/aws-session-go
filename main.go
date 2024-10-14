@@ -4,11 +4,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+)
+
+const (
+	DefaultRegion = "us-west-2"
 )
 
 type inputArgs struct {
@@ -25,6 +30,18 @@ func main() {
 	credFile := flag.String("creds-file", "", "Path to AWS credentials file")
 	help := flag.Bool("help", false, "Show usage")
 	flag.Parse()
+
+	// Because ~ and $HOME is not expanded automatically if you do:
+	// -creds-file=~/.aws/credentials, the '=' stops the shell from expanding
+	var credFileAbs string
+	if *credFile != "" {
+		credFileAbs = getAbsShell(*credFile)
+	}
+	if !isFile(credFileAbs) {
+		log.Fatalf("cannot find AWS credentials file at specified path: '%s'", credFileAbs)
+	}
+
+	ctx := context.Background()
 
 	if *help {
 		fmt.Println("Usage: go run main.go -mfa-token <mfa-token> -profile <profile> -duration <duration> -creds-file <path/to/credentials/file>")
@@ -45,31 +62,28 @@ func main() {
 	fmt.Println("Config File: ", *credFile)
 
 	if *duration < 900 || *duration > 43200 {
-		fmt.Println("Duration must be between 900 and 43200 seconds (15 minutes and 12 hours)")
-		return
+		log.Fatal("duration must be between 900 and 43200 seconds (15 minutes and 12 hours)")
 	}
 
 	sessionArgs := inputArgs{
 		mfaToken: *mfaToken,
 		profile:  *profile,
 		duration: int32(*duration),
-		credFile: *credFile,
+		credFile: credFileAbs,
 	}
 
-	cfg := aws.Config{}
-	err := error(nil)
+	var cfg aws.Config
+	var err error
 	if sessionArgs.credFile != "" {
 		cfg, err = config.LoadDefaultConfig(
-			context.TODO(),
+			ctx,
 			config.WithSharedConfigProfile(sessionArgs.profile),
-			//config.WithSharedConfigFiles([]string{sessionArgs.credFile}),
 			config.WithSharedCredentialsFiles([]string{sessionArgs.credFile}),
 		)
 	} else {
 		cfg, err = config.LoadDefaultConfig(
-			context.TODO(),
+			ctx,
 			config.WithSharedConfigProfile(sessionArgs.profile),
-			//config.WithSharedConfigProfile("default"),
 		)
 	}
 
@@ -80,7 +94,7 @@ func main() {
 
 	// Below is how to retrieve credentials from the config and print them
 	/*
-		data, retErr := cfg.Credentials.Retrieve(context.Background())
+		data, retErr := cfg.Credentials.Retrieve(ctx)
 		if retErr != nil {
 			fmt.Println("Error retrieving credentials, ", retErr)
 			fmt.Println("Please ensure you have a default profile in your ~/.aws/credentials file at minimum. If you have a different profile, you can specify it as an argument to this program. Example: go run main.go 123456 my-profile 3600")
@@ -94,14 +108,14 @@ func main() {
 	*/
 
 	if cfg.Region == "" {
-		cfg.Region = "us-west-2"
+		cfg.Region = DefaultRegion
 	}
 
 	client := sts.NewFromConfig(cfg)
 	idInput := &sts.GetCallerIdentityInput{}
-	idResult, idErr := client.GetCallerIdentity(context.Background(), idInput)
+	idResult, idErr := client.GetCallerIdentity(ctx, idInput)
 	if idErr != nil {
-		fmt.Println("Error getting identity: %s ", idErr)
+		log.Fatalf("Error getting identity: %s", idErr)
 	}
 
 	serialNumber := strings.Replace(*idResult.Arn, "user", "mfa", 1)
@@ -111,10 +125,9 @@ func main() {
 		TokenCode:       &sessionArgs.mfaToken,
 	}
 
-	sessionResult, sessionErr := client.GetSessionToken(context.Background(), sessionInput)
+	sessionResult, sessionErr := client.GetSessionToken(ctx, sessionInput)
 	if sessionErr != nil {
-		fmt.Println("Error getting session token: ", sessionErr)
-		return
+		log.Fatalln("Error getting session token: ", sessionErr)
 	}
 
 	/*

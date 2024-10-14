@@ -1,0 +1,13 @@
+# Project-specific
+aws-session-go
+
+*.dll
+*.dylib
+*.exe
+*.exe~
+*.out
+*.so
+*.test
+.env
+go.work
+go.work.sum
